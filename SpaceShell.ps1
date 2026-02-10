@@ -1,5 +1,5 @@
 <#
-SpaceShell.ps1 — a colorful terminal space shooter for PowerShell
+SpaceShell.ps1 — a colourful terminal space shooter for PowerShell
 - Works on Windows PowerShell 5.1 and PowerShell 7+
 - Uses ANSI colors when available; falls back to ConsoleColor rendering
 Controls: Left/Right or A/D, Space = shoot, P = pause, Q/Esc = quit

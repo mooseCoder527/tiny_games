@@ -387,8 +387,8 @@ try {
         if ($k.Key -eq [ConsoleKey]::Spacebar) { $shoot = $true }
       }
 
-      if ($left)  { $player.x -= 2 }
-      if ($right) { $player.x += 2 }
+      if ($left)  { $player.x -= 8 }
+      if ($right) { $player.x += 8  }
       $player.x = Clamp $player.x 3 ($W-4)
 
       # Shooting (NEW: triple shot during power mode)

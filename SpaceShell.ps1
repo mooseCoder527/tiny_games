@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # -----------------------------
-# NEW: Launch game in a new terminal window (PS5-safe)
+# Launch game in a new terminal window
 # Usage: .\SpaceShell.ps1 -NewWindow
 # -----------------------------
 if ($NewWindow) {
@@ -37,8 +37,6 @@ if ($NewWindow) {
   Start-Process -FilePath "powershell.exe" -WorkingDirectory $wd -ArgumentList $args | Out-Null
   return
 }
-
-
 
 # -----------------------------
 # VT / ANSI helpers
@@ -104,7 +102,7 @@ enum CToken {
   Enemy2
   Hud
   Title
-  PowerUp   # NEW
+  PowerUp
 }
 
 function New-Frame([int]$w, [int]$h) {
@@ -225,6 +223,7 @@ try {
   if ([Console]::BufferHeight -lt $H) { [Console]::BufferHeight = $H }
 } catch { }
 
+# Starfield
 $rand = [Random]::new()
 $stars = New-Object System.Collections.Generic.List[hashtable]
 $starCount = [Math]::Max(60, [int]($W * $H / 35))
@@ -240,7 +239,7 @@ $player = @{
 
 $bullets  = New-Object System.Collections.Generic.List[hashtable]
 $enemies  = New-Object System.Collections.Generic.List[hashtable]
-$powerUps = New-Object System.Collections.Generic.List[hashtable]  # NEW
+$powerUps = New-Object System.Collections.Generic.List[hashtable]
 
 $score = 0
 $level = 1
@@ -248,11 +247,19 @@ $lives = $Lives
 $gameOver = $false
 $paused = $false
 
-# NEW: power mode state
+# Power mode state
 $powerUntilMs = 0
-$powerDurationMs = 6000   # 6 seconds
-$powerSpawnAcc = 0.0      # spawn pacing for '+'
+$powerDurationMs = 6000
+$powerSpawnAcc = 0.0
 
+# Bullet speed (faster bullets)
+$bulletSpeed = 4
+
+# Boss (spawn once after Level 1, i.e. when entering Level 2)
+$bossSpawned = $false
+$bossHp = 18
+
+# spawn pacing
 $spawnAcc = 0.0
 $spawnRate = 0.65
 $enemySpeed = 0.25
@@ -268,6 +275,13 @@ function Spawn-PowerUp {
   param([int]$W)
   $x = $rand.Next(2, $W-2)
   $powerUps.Add(@{ x = $x; y = 2 }) | Out-Null
+}
+
+function Boss-Alive {
+  foreach ($e in $enemies) {
+    if ($e.boss -eq $true) { return $true }
+  }
+  return $false
 }
 
 function Draw-Ship([hashtable]$f, [int]$x, [int]$y) {
@@ -387,27 +401,24 @@ try {
         if ($k.Key -eq [ConsoleKey]::Spacebar) { $shoot = $true }
       }
 
-      if ($left)  { $player.x -= 2 }
-      if ($right) { $player.x += 2  }
+      if ($left)  { $player.x -= 8 }
+      if ($right) { $player.x += 8 }
       $player.x = Clamp $player.x 3 ($W-4)
 
-      # Shooting (NEW: triple shot during power mode)
+      # Shooting (triple shot during power mode)
       if ($player.cooldown -gt 0) { $player.cooldown -= $dtMs }
-
       $powerActive = ($now -lt $powerUntilMs)
 
       if ($shoot -and $player.cooldown -le 0) {
         if ($powerActive) {
           $bullets.Add(@{ x = ($player.x - 1); y = $player.y - 1 }) | Out-Null
-	  [Console]::Beep(800,50)
           $bullets.Add(@{ x = ($player.x);     y = $player.y - 1 }) | Out-Null
-	  [Console]::Beep(800,50)
           $bullets.Add(@{ x = ($player.x + 1); y = $player.y - 1 }) | Out-Null
-	  [Console]::Beep(800,50)
+          [Console]::Beep(800,50)
           $player.cooldown = 160
         } else {
           $bullets.Add(@{ x = $player.x; y = $player.y - 1 }) | Out-Null
-	  [Console]::Beep(800,50)
+          [Console]::Beep(800,50)
           $player.cooldown = 140
         }
       }
@@ -423,21 +434,22 @@ try {
         }
       }
 
-      # Spawn enemies
-      $spawnAcc += ($dtMs / 1000.0) * ($spawnRate + ($level-1)*0.12)
-      while ($spawnAcc -ge 1.0) { $spawnAcc -= 1.0; Spawn-Enemy -W $W }
+      # Spawn enemies (pause normal spawns while boss is alive)
+      if (-not (Boss-Alive)) {
+        $spawnAcc += ($dtMs / 1000.0) * ($spawnRate + ($level-1)*0.12)
+        while ($spawnAcc -ge 1.0) { $spawnAcc -= 1.0; Spawn-Enemy -W $W }
+      }
 
-      # NEW: spawn '+' power-up occasionally
-      # roughly: one every 10–16 seconds depending on random luck
+      # Spawn '+' power-up occasionally
       $powerSpawnAcc += ($dtMs / 1000.0) * 0.10
       while ($powerSpawnAcc -ge 1.0) {
         $powerSpawnAcc -= 1.0
         if ($rand.NextDouble() -lt 0.75) { Spawn-PowerUp -W $W }
       }
 
-      # Move bullets
+      # Move bullets (FASTER)
       for ($i=$bullets.Count-1; $i -ge 0; $i--) {
-        $bullets[$i].y -= 2
+        $bullets[$i].y -= $bulletSpeed
         if ($bullets[$i].y -lt 1) { $bullets.RemoveAt($i) }
       }
 
@@ -457,7 +469,7 @@ try {
         }
       }
 
-      # NEW: Move power-ups (fall down)
+      # Move power-ups
       $accPowerMove += $dtMs
       if ($accPowerMove -ge 90) {
         $steps = [int]($accPowerMove / 90)
@@ -471,7 +483,6 @@ try {
       # Collisions: player picks up '+'
       for ($pi=$powerUps.Count-1; $pi -ge 0; $pi--) {
         $pup = $powerUps[$pi]
-        # power-up is 1x1, player is 3x2
         if (Rect-Hit ($player.x-1) ($player.y) 3 2 ($pup.x) ($pup.y) 1 1) {
           $powerUps.RemoveAt($pi)
           $powerUntilMs = $now + $powerDurationMs
@@ -489,6 +500,10 @@ try {
             $hit = $true
             if ($e.hp -le 0) {
               $score += if ($e.type -eq 2) { 40 } else { 20 }
+              if ($e.boss -eq $true) {
+                [Console]::Beep(300,120) # boss defeat sound
+                $score += 200
+              }
               $enemies.RemoveAt($ei)
             } else {
               $score += 5
@@ -504,23 +519,35 @@ try {
         $e = $enemies[$ei]
         if (Rect-Hit ($player.x-1) ($player.y) 3 2 ($e.x-1) ($e.y) 3 2) {
           $enemies.RemoveAt($ei)
+          [Console]::Beep(220,120) # crash sound
           $lives--
           if ($lives -le 0) { $gameOver = $true }
         }
       }
 
-      # Level up
+      # Level up (spawn boss ONCE after level 1)
       $newLevel = 1 + [int]([Math]::Floor($score / 250))
       if ($newLevel -ne $level) {
+
+        if (-not $bossSpawned -and $newLevel -eq 2) {
+          $bossSpawned = $true
+          $enemies.Add(@{
+            x = [int]($W / 2)
+            y = 3
+            type = 2
+            hp = $bossHp
+            boss = $true
+          }) | Out-Null
+          [Console]::Beep(600,120) # boss spawn sound
+        }
+
         $level = $newLevel
         $spawnRate = [Math]::Min(1.35, 0.65 + ($level-1)*0.08)
         $enemySpeed = [Math]::Min(0.75, 0.25 + ($level-1)*0.03)
       }
     }
 
-    # -----------------------------
     # Render
-    # -----------------------------
     $f = New-Frame $W $H
 
     foreach ($s in $stars) { Set-Cell $f $s.x $s.y '.' ([CToken]::Star) }
@@ -528,8 +555,9 @@ try {
     $now2 = NowMs
     $powerLeft = [Math]::Max(0, [int](($powerUntilMs - $now2) / 1000))
     $powerText = if ($powerLeft -gt 0) { "   Power: ON ($powerLeft s)" } else { "" }
+    $bossText  = if (Boss-Alive) { "   BOSS!" } else { "" }
 
-    $hud = "Score: $score   Lives: $lives   Level: $level$powerText"
+    $hud = "Score: $score   Lives: $lives   Level: $level$powerText$bossText"
     Draw-Text $f 2 0 $hud ([CToken]::Hud)
     Draw-Text $f ($W - 26) 0 "P:Pause  Q/Esc:Quit" ([CToken]::Hud)
 
@@ -541,11 +569,8 @@ try {
     }
 
     Draw-Ship $f $player.x $player.y
-
     foreach ($b in $bullets) { Set-Cell $f $b.x $b.y '|' ([CToken]::Bullet) }
-
     foreach ($pup in $powerUps) { Set-Cell $f $pup.x $pup.y '+' ([CToken]::PowerUp) }
-
     foreach ($e in $enemies) { Draw-Enemy $f $e.x $e.y $e.type }
 
     Render-Frame $f
@@ -555,6 +580,7 @@ try {
     if ($sleep -gt 0) { Start-Sleep -Milliseconds $sleep }
   }
 
+  # Game over screen
   $end = New-Frame $W $H
   $t1 = "GAME OVER"
   $t2 = "Final Score: $score   Level: $level"

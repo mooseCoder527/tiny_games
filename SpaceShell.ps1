@@ -15,30 +15,30 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-
+# -----------------------------
+# NEW: Launch game in a new terminal window (PS5-safe)
+# Usage: .\SpaceShell.ps1 -NewWindow
+# -----------------------------
 if ($NewWindow) {
-$self = $MyInvocation.MyCommand.Path
-if (-not $self) { throw "Cannot relaunch: script path not found." }
+  $self = $PSCommandPath
+  if (-not $self) { $self = $MyInvocation.MyCommand.Path }  # PS5 fallback
+  if (-not $self) { throw "Cannot relaunch: script path not found." }
 
+  $wd = Split-Path -Parent $self
 
-$wd = Split-Path -Parent $self
+  $args = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $self,
+    "-Fps", $Fps,
+    "-Lives", $Lives
+  )
 
-
-Start-Process -FilePath "powershell.exe" `
--WorkingDirectory $wd `
--WindowStyle Normal `
--ArgumentList @(
-"-NoProfile",
-"-ExecutionPolicy","Bypass",
-"-NoExit",
-"-File", $self,
-"-Fps", $Fps,
-"-Lives", $Lives
-)
-
-
-return
+  Start-Process -FilePath "powershell.exe" -WorkingDirectory $wd -ArgumentList $args | Out-Null
+  return
 }
+
+
 
 # -----------------------------
 # VT / ANSI helpers

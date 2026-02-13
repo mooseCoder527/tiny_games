@@ -9,11 +9,6 @@ Controls:
   P           Pause
   Q / Esc     Quit
 
-Gameplay:
-  - '+' power-up increases fire rate temporarily (does NOT increase bullet count)
-  - Bullets use swept collision so fast bullets won't "skip" enemies
-  - Enemies are intentionally slower (and scale slowly with level)
-
 Run:
   .\SpaceShell.ps1
   .\SpaceShell.ps1 -Fps 30 -Lives 3
@@ -324,10 +319,11 @@ function Draw-Ship([hashtable]$f, [int]$x, [int]$y) {
   Set-Cell $f ($x+1) ($y+1) '|' ([CToken]::Player)
 }
 
-function Draw-Enemy([hashtable]$f, [int]$x, [int]$y, [int]$type) {
+function Draw-Enemy([hashtable]$f, [int]$x, [int]$y, [int]$type, [bool]$boss = $false) {
   if ($type -eq 2) {
+    $mid = if ($boss) { 'B' } else { 'A' }
     Set-Cell $f ($x-1) $y '\' ([CToken]::Enemy2)
-    Set-Cell $f ($x)   $y 'A' ([CToken]::Enemy2)
+    Set-Cell $f ($x)   $y $mid ([CToken]::Enemy2)
     Set-Cell $f ($x+1) $y '/' ([CToken]::Enemy2)
     Set-Cell $f ($x-1) ($y+1) '/' ([CToken]::Enemy2)
     Set-Cell $f ($x)   ($y+1) '_' ([CToken]::Enemy2)
@@ -437,7 +433,7 @@ try {
           if ($k.Key -eq [ConsoleKey]::Spacebar) { $shoot = $true }
         }
 
-        # NEW: move 1 cell per frame instead of jumping
+        # Move 1 cell per frame instead of jumping
         if ($left)  { $player.x -= 1 }
         if ($right) { $player.x += 1 }
         $player.x = Clamp $player.x 3 ($W-4)
@@ -618,7 +614,7 @@ try {
       Draw-Ship $f $player.x $player.y
       foreach ($b in $bullets) { Set-Cell $f $b.x $b.y $bulletChar ([CToken]::Bullet) }
       foreach ($pup in $powerUps) { Set-Cell $f $pup.x $pup.y '+' ([CToken]::PowerUp) }
-      foreach ($e in $enemies) { Draw-Enemy $f $e.x $e.y $e.type }
+      foreach ($e in $enemies) { Draw-Enemy $f $e.x $e.y $e.type (Is-Boss $e) }
 
       Render-Frame $f
 

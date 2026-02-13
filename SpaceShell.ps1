@@ -2,7 +2,22 @@
 SpaceShell.ps1 — a colourful terminal space shooter for PowerShell
 - Works on Windows PowerShell 5.1 and PowerShell 7+
 - Uses ANSI colors when available; falls back to ConsoleColor rendering
-Controls: Left/Right or A/D, Space = shoot, P = pause, Q/Esc = quit
+
+Controls:
+  ←/→ or A/D  Move
+  SPACE       Shoot (always 3 bullets: * * *)
+  P           Pause
+  Q / Esc     Quit
+
+Gameplay:
+  - '+' power-up increases fire rate temporarily (does NOT increase bullet count)
+  - Bullets use swept collision so fast bullets won't "skip" enemies
+  - Enemies are intentionally slower (and scale slowly with level)
+
+Run:
+  .\SpaceShell.ps1
+  .\SpaceShell.ps1 -Fps 30 -Lives 3
+  .\SpaceShell.ps1 -NewWindow
 #>
 
 [CmdletBinding()]
@@ -16,7 +31,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # -----------------------------
-# Launch game in a new terminal window
+# Launch game in a new terminal window (PS5-safe)
 # Usage: .\SpaceShell.ps1 -NewWindow
 # -----------------------------
 if ($NewWindow) {
@@ -27,6 +42,7 @@ if ($NewWindow) {
   $wd = Split-Path -Parent $self
 
   $args = @(
+    "-NoExit",
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", $self,
@@ -88,6 +104,10 @@ function Read-Keys {
     $keys.Add([Console]::ReadKey($true)) | Out-Null
   }
   return $keys
+}
+
+function Safe-Beep([int]$freq = 800, [int]$durMs = 40) {
+  try { [Console]::Beep($freq, $durMs) } catch { }
 }
 
 # -----------------------------
@@ -203,7 +223,7 @@ function Render-Frame([hashtable]$f) {
 }
 
 # -----------------------------
-# Game state
+# Game state & settings
 # -----------------------------
 function Ensure-TerminalSize {
   $w = [Console]::WindowWidth
@@ -223,8 +243,9 @@ try {
   if ([Console]::BufferHeight -lt $H) { [Console]::BufferHeight = $H }
 } catch { }
 
-# Starfield
 $rand = [Random]::new()
+
+# Starfield
 $stars = New-Object System.Collections.Generic.List[hashtable]
 $starCount = [Math]::Max(60, [int]($W * $H / 35))
 for ($i=0; $i -lt $starCount; $i++) {
@@ -247,22 +268,28 @@ $lives = $Lives
 $gameOver = $false
 $paused = $false
 
-# Power mode state
+# Power mode: affects fire rate only
 $powerUntilMs = 0
 $powerDurationMs = 6000
 $powerSpawnAcc = 0.0
 
-# Bullet speed (faster bullets)
+# Bullets
 $bulletSpeed = 4
+$bulletChar  = '*'
+$shotOffsets = @(-1, 0, 1)     # always 3 bullets
+$baseCooldownMs  = 160
+$powerCooldownMs = 95
 
 # Boss (spawn once after Level 1, i.e. when entering Level 2)
 $bossSpawned = $false
 $bossHp = 18
 
-# spawn pacing
-$spawnAcc = 0.0
+# Spawn pacing
+$spawnAcc  = 0.0
 $spawnRate = 0.65
-$enemySpeed = 0.25
+
+# Enemies pacing
+$enemySpeed = 0.16
 
 function Spawn-Enemy {
   param([int]$W)
@@ -277,16 +304,20 @@ function Spawn-PowerUp {
   $powerUps.Add(@{ x = $x; y = 2 }) | Out-Null
 }
 
+function Is-Boss([hashtable]$e) {
+  return ($null -ne $e -and $e.ContainsKey('boss') -and $e['boss'] -eq $true)
+}
+
 function Boss-Alive {
   foreach ($e in $enemies) {
-    if ($e.boss -eq $true) { return $true }
+    if (Is-Boss $e) { return $true }
   }
   return $false
 }
 
 function Draw-Ship([hashtable]$f, [int]$x, [int]$y) {
   Set-Cell $f ($x-1) $y '/'   ([CToken]::Player)
-  Set-Cell $f ($x)   $y 'A'   ([CToken]::Player)
+  Set-Cell $f ($x)   $y 'M'   ([CToken]::Player)
   Set-Cell $f ($x+1) $y '\'   ([CToken]::Player)
   Set-Cell $f ($x-1) ($y+1) '|' ([CToken]::Player)
   Set-Cell $f ($x)   ($y+1) '_' ([CToken]::Player)
@@ -296,7 +327,7 @@ function Draw-Ship([hashtable]$f, [int]$x, [int]$y) {
 function Draw-Enemy([hashtable]$f, [int]$x, [int]$y, [int]$type) {
   if ($type -eq 2) {
     Set-Cell $f ($x-1) $y '\' ([CToken]::Enemy2)
-    Set-Cell $f ($x)   $y 'M' ([CToken]::Enemy2)
+    Set-Cell $f ($x)   $y 'A' ([CToken]::Enemy2)
     Set-Cell $f ($x+1) $y '/' ([CToken]::Enemy2)
     Set-Cell $f ($x-1) ($y+1) '/' ([CToken]::Enemy2)
     Set-Cell $f ($x)   ($y+1) '_' ([CToken]::Enemy2)
@@ -334,269 +365,296 @@ function Reset-ConsoleState {
 }
 
 # -----------------------------
-# Title screen
+# Game wrapper: don't close on exceptions
 # -----------------------------
 try {
-  if ($UseVt) { [Console]::Write($VT.Clear + $VT.Home + $VT.HideCur) }
-  else { [Console]::Clear(); [Console]::CursorVisible = $false }
 
-  $titleFrame = New-Frame $W $H
-  $t1 = "SPACE SHELL"
-  $t2 = "A tiny PowerShell space shooter"
-  $t3 = "← → / A D move   SPACE shoot   P pause   Q/Esc quit"
-  $t4 = "Press ENTER to start"
+  # -----------------------------
+  # Title screen
+  # -----------------------------
+  try {
+    if ($UseVt) { [Console]::Write($VT.Clear + $VT.Home + $VT.HideCur) }
+    else { [Console]::Clear(); [Console]::CursorVisible = $false }
 
-  Draw-Text $titleFrame ([int](($W-$t1.Length)/2)) 5 $t1 ([CToken]::Title)
-  Draw-Text $titleFrame ([int](($W-$t2.Length)/2)) 7 $t2 ([CToken]::Hud)
-  Draw-Text $titleFrame ([int](($W-$t3.Length)/2)) 10 $t3 ([CToken]::Hud)
-  Draw-Text $titleFrame ([int](($W-$t4.Length)/2)) 12 $t4 ([CToken]::Hud)
-  Render-Frame $titleFrame
+    $titleFrame = New-Frame $W $H
+    $t1 = "SPACE SHELL"
+    $t2 = "A tiny PowerShell space shooter"
+    $t3 = "← → / A D move   SPACE shoot   P pause   Q/Esc quit"
+    $t4 = "Press ENTER to start"
 
-  while ($true) {
-    $k = [Console]::ReadKey($true)
-    if ($k.Key -eq [ConsoleKey]::Enter) { break }
-    if ($k.Key -eq [ConsoleKey]::Escape -or $k.Key -eq [ConsoleKey]::Q) { return }
-  }
-} finally {}
+    Draw-Text $titleFrame ([int](($W-$t1.Length)/2)) 5  $t1 ([CToken]::Title)
+    Draw-Text $titleFrame ([int](($W-$t2.Length)/2)) 7  $t2 ([CToken]::Hud)
+    Draw-Text $titleFrame ([int](($W-$t3.Length)/2)) 10 $t3 ([CToken]::Hud)
+    Draw-Text $titleFrame ([int](($W-$t4.Length)/2)) 12 $t4 ([CToken]::Hud)
+    Render-Frame $titleFrame
 
-# -----------------------------
-# Main loop
-# -----------------------------
-$dtTarget = [Math]::Max(10, [int](1000 / [Math]::Max(5,$Fps)))
-$lastTick = NowMs
-$accEnemyMove = 0.0
-$accStarMove = 0.0
-$accPowerMove = 0.0
-
-try {
-  if ($UseVt) { [Console]::Write($VT.Clear + $VT.Home + $VT.HideCur) }
-  else { [Console]::Clear(); [Console]::CursorVisible = $false }
-
-  while (-not $gameOver) {
-    if ([Console]::WindowWidth -ne $W -or [Console]::WindowHeight -ne $H) {
-      throw "Window resized. Restart the game after resizing."
+    while ($true) {
+      $k = [Console]::ReadKey($true)
+      if ($k.Key -eq [ConsoleKey]::Enter) { break }
+      if ($k.Key -eq [ConsoleKey]::Escape -or $k.Key -eq [ConsoleKey]::Q) { return }
     }
+  } finally { }
 
-    $now = NowMs
-    $dtMs = $now - $lastTick
-    if ($dtMs -lt 0) { $dtMs = $dtTarget }
-    $lastTick = $now
+  # -----------------------------
+  # Main loop
+  # -----------------------------
+  $dtTarget = [Math]::Max(10, [int](1000 / [Math]::Max(5,$Fps)))
+  $lastTick = NowMs
+  $accEnemyMove = 0.0
+  $accStarMove  = 0.0
+  $accPowerMove = 0.0
 
-    $keys = Read-Keys
+  try {
+    if ($UseVt) { [Console]::Write($VT.Clear + $VT.Home + $VT.HideCur) }
+    else { [Console]::Clear(); [Console]::CursorVisible = $false }
 
-    foreach ($k in $keys) {
-      switch ($k.Key) {
-        ([ConsoleKey]::Escape) { $gameOver = $true }
-        ([ConsoleKey]::Q)      { $gameOver = $true }
-        ([ConsoleKey]::P)      { $paused = -not $paused }
+    while (-not $gameOver) {
+      if ([Console]::WindowWidth -ne $W -or [Console]::WindowHeight -ne $H) {
+        throw "Window resized. Restart the game after resizing."
       }
-    }
 
-    if (-not $paused) {
-      # Input
-      $left = $false; $right = $false; $shoot = $false
+      $now = NowMs
+      $dtMs = $now - $lastTick
+      if ($dtMs -lt 0) { $dtMs = $dtTarget }
+      $lastTick = $now
+
+      $keys = Read-Keys
+
       foreach ($k in $keys) {
-        if ($k.Key -eq [ConsoleKey]::LeftArrow -or $k.Key -eq [ConsoleKey]::A) { $left = $true }
-        if ($k.Key -eq [ConsoleKey]::RightArrow -or $k.Key -eq [ConsoleKey]::D) { $right = $true }
-        if ($k.Key -eq [ConsoleKey]::Spacebar) { $shoot = $true }
-      }
-
-      if ($left)  { $player.x -= 8 }
-      if ($right) { $player.x += 8 }
-      $player.x = Clamp $player.x 3 ($W-4)
-
-      # Shooting (triple shot during power mode)
-      if ($player.cooldown -gt 0) { $player.cooldown -= $dtMs }
-      $powerActive = ($now -lt $powerUntilMs)
-
-      if ($shoot -and $player.cooldown -le 0) {
-        if ($powerActive) {
-          $bullets.Add(@{ x = ($player.x - 1); y = $player.y - 1 }) | Out-Null
-          $bullets.Add(@{ x = ($player.x);     y = $player.y - 1 }) | Out-Null
-          $bullets.Add(@{ x = ($player.x + 1); y = $player.y - 1 }) | Out-Null
-          [Console]::Beep(800,50)
-          $player.cooldown = 160
-        } else {
-          $bullets.Add(@{ x = $player.x; y = $player.y - 1 }) | Out-Null
-          [Console]::Beep(800,50)
-          $player.cooldown = 140
+        switch ($k.Key) {
+          ([ConsoleKey]::Escape) { $gameOver = $true }
+          ([ConsoleKey]::Q)      { $gameOver = $true }
+          ([ConsoleKey]::P)      { $paused = -not $paused }
         }
       }
 
-      # Stars drift
-      $accStarMove += $dtMs
-      if ($accStarMove -ge 60) {
-        $steps = [int]($accStarMove / 60)
-        $accStarMove -= 60 * $steps
-        foreach ($s in $stars) {
-          $s.y += $s.s * $steps
-          if ($s.y -ge $H) { $s.y = 0; $s.x = $rand.Next(0,$W); $s.s = $rand.Next(1,4) }
+      if (-not $paused) {
+        # Input
+        $left = $false; $right = $false; $shoot = $false
+        foreach ($k in $keys) {
+          if ($k.Key -eq [ConsoleKey]::LeftArrow -or $k.Key -eq [ConsoleKey]::A) { $left = $true }
+          if ($k.Key -eq [ConsoleKey]::RightArrow -or $k.Key -eq [ConsoleKey]::D) { $right = $true }
+          if ($k.Key -eq [ConsoleKey]::Spacebar) { $shoot = $true }
         }
-      }
 
-      # Spawn enemies (pause normal spawns while boss is alive)
-      if (-not (Boss-Alive)) {
-        $spawnAcc += ($dtMs / 1000.0) * ($spawnRate + ($level-1)*0.12)
-        while ($spawnAcc -ge 1.0) { $spawnAcc -= 1.0; Spawn-Enemy -W $W }
-      }
+        # NEW: move 1 cell per frame instead of jumping
+        if ($left)  { $player.x -= 1 }
+        if ($right) { $player.x += 1 }
+        $player.x = Clamp $player.x 3 ($W-4)
 
-      # Spawn '+' power-up occasionally
-      $powerSpawnAcc += ($dtMs / 1000.0) * 0.10
-      while ($powerSpawnAcc -ge 1.0) {
-        $powerSpawnAcc -= 1.0
-        if ($rand.NextDouble() -lt 0.75) { Spawn-PowerUp -W $W }
-      }
+        # Shooting: ALWAYS 3 bullets (* * *). Power-up affects cooldown only.
+        if ($player.cooldown -gt 0) { $player.cooldown -= $dtMs }
+        $powerActive = ($now -lt $powerUntilMs)
 
-      # Move bullets (FASTER)
-      for ($i=$bullets.Count-1; $i -ge 0; $i--) {
-        $bullets[$i].y -= $bulletSpeed
-        if ($bullets[$i].y -lt 1) { $bullets.RemoveAt($i) }
-      }
+        if ($shoot -and $player.cooldown -le 0) {
+          foreach ($dx in $shotOffsets) {
+            $bx = $player.x + $dx
+            if ($bx -ge 1 -and $bx -le ($W - 2)) {
+              # keep y0 for swept collision
+              $bullets.Add(@{ x = $bx; y = ($player.y - 1); y0 = ($player.y - 1) }) | Out-Null
+            }
+          }
+          Safe-Beep 800 50
+          $player.cooldown = if ($powerActive) { $powerCooldownMs } else { $baseCooldownMs }
+        }
 
-      # Move enemies
-      $accEnemyMove += $dtMs
-      $movePeriod = [Math]::Max(40, [int](180 / (1 + ($level-1)*0.12) / [Math]::Max(0.2,$enemySpeed)))
-      if ($accEnemyMove -ge $movePeriod) {
-        $steps = [int]($accEnemyMove / $movePeriod)
-        $accEnemyMove -= $movePeriod * $steps
-        for ($i=$enemies.Count-1; $i -ge 0; $i--) {
-          $enemies[$i].y += 1 * $steps
-          if ($enemies[$i].y -ge $H-2) {
-            $enemies.RemoveAt($i)
+        # Stars drift
+        $accStarMove += $dtMs
+        if ($accStarMove -ge 60) {
+          $steps = [int]($accStarMove / 60)
+          $accStarMove -= 60 * $steps
+          foreach ($s in $stars) {
+            $s.y += $s.s * $steps
+            if ($s.y -ge $H) { $s.y = 0; $s.x = $rand.Next(0,$W); $s.s = $rand.Next(1,4) }
+          }
+        }
+
+        # Spawn enemies (pause normal spawns while boss is alive)
+        if (-not (Boss-Alive)) {
+          $spawnAcc += ($dtMs / 1000.0) * ($spawnRate + ($level-1)*0.10)
+          while ($spawnAcc -ge 1.0) { $spawnAcc -= 1.0; Spawn-Enemy -W $W }
+        }
+
+        # Spawn '+' power-up occasionally
+        $powerSpawnAcc += ($dtMs / 1000.0) * 0.10
+        while ($powerSpawnAcc -ge 1.0) {
+          $powerSpawnAcc -= 1.0
+          if ($rand.NextDouble() -lt 0.75) { Spawn-PowerUp -W $W }
+        }
+
+        # Move bullets (fast) with swept support
+        for ($i=$bullets.Count-1; $i -ge 0; $i--) {
+          $b = $bullets[$i]
+          $b.y0 = $b.y
+          $b.y  -= $bulletSpeed
+          if ($b.y -lt 1) { $bullets.RemoveAt($i) }
+        }
+
+        # Move enemies (SLOWER baseline, slow scaling)
+        $accEnemyMove += $dtMs
+        $movePeriod = [Math]::Max(70, [int](260 / (1 + ($level-1)*0.08) / [Math]::Max(0.2,$enemySpeed)))
+        if ($accEnemyMove -ge $movePeriod) {
+          $steps = [int]($accEnemyMove / $movePeriod)
+          $accEnemyMove -= $movePeriod * $steps
+          for ($i=$enemies.Count-1; $i -ge 0; $i--) {
+            $enemies[$i].y += 1 * $steps
+            if ($enemies[$i].y -ge $H-2) {
+              $enemies.RemoveAt($i)
+              $lives--
+              if ($lives -le 0) { $gameOver = $true }
+            }
+          }
+        }
+
+        # Move power-ups
+        $accPowerMove += $dtMs
+        if ($accPowerMove -ge 90) {
+          $steps = [int]($accPowerMove / 90)
+          $accPowerMove -= 90 * $steps
+          for ($i=$powerUps.Count-1; $i -ge 0; $i--) {
+            $powerUps[$i].y += 1 * $steps
+            if ($powerUps[$i].y -ge $H-1) { $powerUps.RemoveAt($i) }
+          }
+        }
+
+        # Collisions: player picks up '+'
+        for ($pi=$powerUps.Count-1; $pi -ge 0; $pi--) {
+          $pup = $powerUps[$pi]
+          if (Rect-Hit ($player.x-1) ($player.y) 3 2 ($pup.x) ($pup.y) 1 1) {
+            $powerUps.RemoveAt($pi)
+            $powerUntilMs = $now + $powerDurationMs
+          }
+        }
+
+        # Collisions: bullet vs enemy
+        for ($bi=$bullets.Count-1; $bi -ge 0; $bi--) {
+          $b = $bullets[$bi]
+
+          $hit = $false
+          $yTop = [Math]::Min($b.y0, $b.y)
+          $yBot = [Math]::Max($b.y0, $b.y)
+
+          for ($ei=$enemies.Count-1; $ei -ge 0; $ei--) {
+            $e = $enemies[$ei]
+
+            # Enemy rect is (x-1..x+1) and (y..y+1)
+            $ex1 = $e.x - 1; $ex2 = $e.x + 1
+            $ey1 = $e.y;     $ey2 = $e.y + 1
+
+            # Swept overlap: bullet x must be inside enemy x-range, and bullet segment crosses enemy y-range
+            if ($b.x -ge $ex1 -and $b.x -le $ex2 -and -not ($yBot -lt $ey1 -or $yTop -gt $ey2)) {
+              $e.hp -= 1
+              $hit = $true
+              if ($e.hp -le 0) {
+                $score += if ($e.type -eq 2) { 40 } else { 20 }
+                if (Is-Boss $e) {
+                  Safe-Beep 300 120 # boss defeat sound
+                  $score += 200
+                }
+                $enemies.RemoveAt($ei)
+              } else {
+                $score += 5
+              }
+              break
+            }
+          }
+          if ($hit) { $bullets.RemoveAt($bi) }
+        }
+
+        # Collisions: player vs enemy
+        for ($ei=$enemies.Count-1; $ei -ge 0; $ei--) {
+          $e = $enemies[$ei]
+          if (Rect-Hit ($player.x-1) ($player.y) 3 2 ($e.x-1) ($e.y) 3 2) {
+            $enemies.RemoveAt($ei)
+            Safe-Beep 220 120 # crash sound
             $lives--
             if ($lives -le 0) { $gameOver = $true }
           }
         }
-      }
 
-      # Move power-ups
-      $accPowerMove += $dtMs
-      if ($accPowerMove -ge 90) {
-        $steps = [int]($accPowerMove / 90)
-        $accPowerMove -= 90 * $steps
-        for ($i=$powerUps.Count-1; $i -ge 0; $i--) {
-          $powerUps[$i].y += 1 * $steps
-          if ($powerUps[$i].y -ge $H-1) { $powerUps.RemoveAt($i) }
-        }
-      }
+        # Level up (spawn boss ONCE after level 1)
+        $newLevel = 1 + [int]([Math]::Floor($score / 250))
+        if ($newLevel -ne $level) {
 
-      # Collisions: player picks up '+'
-      for ($pi=$powerUps.Count-1; $pi -ge 0; $pi--) {
-        $pup = $powerUps[$pi]
-        if (Rect-Hit ($player.x-1) ($player.y) 3 2 ($pup.x) ($pup.y) 1 1) {
-          $powerUps.RemoveAt($pi)
-          $powerUntilMs = $now + $powerDurationMs
-        }
-      }
-
-      # Collisions: bullet vs enemy
-      for ($bi=$bullets.Count-1; $bi -ge 0; $bi--) {
-        $b = $bullets[$bi]
-        $hit = $false
-        for ($ei=$enemies.Count-1; $ei -ge 0; $ei--) {
-          $e = $enemies[$ei]
-          if (Rect-Hit ($b.x) ($b.y) 1 1 ($e.x-1) ($e.y) 3 2) {
-            $e.hp -= 1
-            $hit = $true
-            if ($e.hp -le 0) {
-              $score += if ($e.type -eq 2) { 40 } else { 20 }
-              if ($e.boss -eq $true) {
-                [Console]::Beep(300,120) # boss defeat sound
-                $score += 200
-              }
-              $enemies.RemoveAt($ei)
-            } else {
-              $score += 5
-            }
-            break
+          if (-not $bossSpawned -and $newLevel -eq 2) {
+            $bossSpawned = $true
+            $enemies.Add(@{
+              x = [int]($W / 2)
+              y = 3
+              type = 2
+              hp = $bossHp
+              boss = $true
+            }) | Out-Null
+            Safe-Beep 600 120 # boss spawn sound
           }
-        }
-        if ($hit) { $bullets.RemoveAt($bi) }
-      }
 
-      # Collisions: player vs enemy
-      for ($ei=$enemies.Count-1; $ei -ge 0; $ei--) {
-        $e = $enemies[$ei]
-        if (Rect-Hit ($player.x-1) ($player.y) 3 2 ($e.x-1) ($e.y) 3 2) {
-          $enemies.RemoveAt($ei)
-          [Console]::Beep(220,120) # crash sound
-          $lives--
-          if ($lives -le 0) { $gameOver = $true }
+          $level = $newLevel
+          $spawnRate  = [Math]::Min(1.20, 0.65 + ($level-1)*0.06)
+          $enemySpeed = [Math]::Min(0.45, 0.16 + ($level-1)*0.018)
         }
       }
 
-      # Level up (spawn boss ONCE after level 1)
-      $newLevel = 1 + [int]([Math]::Floor($score / 250))
-      if ($newLevel -ne $level) {
+      # Render
+      $f = New-Frame $W $H
 
-        if (-not $bossSpawned -and $newLevel -eq 2) {
-          $bossSpawned = $true
-          $enemies.Add(@{
-            x = [int]($W / 2)
-            y = 3
-            type = 2
-            hp = $bossHp
-            boss = $true
-          }) | Out-Null
-          [Console]::Beep(600,120) # boss spawn sound
-        }
+      foreach ($s in $stars) { Set-Cell $f $s.x $s.y '.' ([CToken]::Star) }
 
-        $level = $newLevel
-        $spawnRate = [Math]::Min(1.35, 0.65 + ($level-1)*0.08)
-        $enemySpeed = [Math]::Min(0.75, 0.25 + ($level-1)*0.03)
+      $now2 = NowMs
+      $powerLeft = [Math]::Max(0, [int](($powerUntilMs - $now2) / 1000))
+      $powerText = if ($powerLeft -gt 0) { "   Power: ON ($powerLeft s)" } else { "" }
+      $bossText  = if (Boss-Alive) { "   BOSS!" } else { "" }
+
+      $hud = "Score: $score   Lives: $lives   Level: $level$powerText$bossText"
+      Draw-Text $f 2 0 $hud ([CToken]::Hud)
+      Draw-Text $f ($W - 26) 0 "P:Pause  Q/Esc:Quit" ([CToken]::Hud)
+
+      if ($paused) {
+        $msg = "PAUSED"
+        Draw-Text $f ([int](($W-$msg.Length)/2)) ([int]($H/2)-1) $msg ([CToken]::Title)
+        $msg2 = "Press P to resume"
+        Draw-Text $f ([int](($W-$msg2.Length)/2)) ([int]($H/2)+1) $msg2 ([CToken]::Hud)
       }
+
+      Draw-Ship $f $player.x $player.y
+      foreach ($b in $bullets) { Set-Cell $f $b.x $b.y $bulletChar ([CToken]::Bullet) }
+      foreach ($pup in $powerUps) { Set-Cell $f $pup.x $pup.y '+' ([CToken]::PowerUp) }
+      foreach ($e in $enemies) { Draw-Enemy $f $e.x $e.y $e.type }
+
+      Render-Frame $f
+
+      $frameSpent = (NowMs) - $now
+      $sleep = $dtTarget - $frameSpent
+      if ($sleep -gt 0) { Start-Sleep -Milliseconds $sleep }
     }
 
-    # Render
-    $f = New-Frame $W $H
+    # Game over screen
+    $end = New-Frame $W $H
+    $t1 = "GAME OVER"
+    $t2 = "Final Score: $score   Level: $level"
+    $t3 = "Press ENTER to exit"
+    Draw-Text $end ([int](($W-$t1.Length)/2)) ([int]($H/2)-2) $t1 ([CToken]::Title)
+    Draw-Text $end ([int](($W-$t2.Length)/2)) ([int]($H/2)) $t2 ([CToken]::Hud)
+    Draw-Text $end ([int](($W-$t3.Length)/2)) ([int]($H/2)+2) $t3 ([CToken]::Hud)
+    Render-Frame $end
 
-    foreach ($s in $stars) { Set-Cell $f $s.x $s.y '.' ([CToken]::Star) }
-
-    $now2 = NowMs
-    $powerLeft = [Math]::Max(0, [int](($powerUntilMs - $now2) / 1000))
-    $powerText = if ($powerLeft -gt 0) { "   Power: ON ($powerLeft s)" } else { "" }
-    $bossText  = if (Boss-Alive) { "   BOSS!" } else { "" }
-
-    $hud = "Score: $score   Lives: $lives   Level: $level$powerText$bossText"
-    Draw-Text $f 2 0 $hud ([CToken]::Hud)
-    Draw-Text $f ($W - 26) 0 "P:Pause  Q/Esc:Quit" ([CToken]::Hud)
-
-    if ($paused) {
-      $msg = "PAUSED"
-      Draw-Text $f ([int](($W-$msg.Length)/2)) ([int]($H/2)-1) $msg ([CToken]::Title)
-      $msg2 = "Press P to resume"
-      Draw-Text $f ([int](($W-$msg2.Length)/2)) ([int]($H/2)+1) $msg2 ([CToken]::Hud)
+    while ($true) {
+      $k = [Console]::ReadKey($true)
+      if ($k.Key -eq [ConsoleKey]::Enter -or $k.Key -eq [ConsoleKey]::Escape -or $k.Key -eq [ConsoleKey]::Q) { break }
     }
-
-    Draw-Ship $f $player.x $player.y
-    foreach ($b in $bullets) { Set-Cell $f $b.x $b.y '|' ([CToken]::Bullet) }
-    foreach ($pup in $powerUps) { Set-Cell $f $pup.x $pup.y '+' ([CToken]::PowerUp) }
-    foreach ($e in $enemies) { Draw-Enemy $f $e.x $e.y $e.type }
-
-    Render-Frame $f
-
-    $frameSpent = (NowMs) - $now
-    $sleep = $dtTarget - $frameSpent
-    if ($sleep -gt 0) { Start-Sleep -Milliseconds $sleep }
+  }
+  finally {
+    Reset-ConsoleState
+    try { [Console]::SetCursorPosition(0, [Math]::Min([Console]::CursorTop, [Console]::WindowHeight-1)) } catch { }
+    Write-Host ""
   }
 
-  # Game over screen
-  $end = New-Frame $W $H
-  $t1 = "GAME OVER"
-  $t2 = "Final Score: $score   Level: $level"
-  $t3 = "Press ENTER to exit"
-  Draw-Text $end ([int](($W-$t1.Length)/2)) ([int]($H/2)-2) $t1 ([CToken]::Title)
-  Draw-Text $end ([int](($W-$t2.Length)/2)) ([int]($H/2)) $t2 ([CToken]::Hud)
-  Draw-Text $end ([int](($W-$t3.Length)/2)) ([int]($H/2)+2) $t3 ([CToken]::Hud)
-  Render-Frame $end
-
-  while ($true) {
-    $k = [Console]::ReadKey($true)
-    if ($k.Key -eq [ConsoleKey]::Enter -or $k.Key -eq [ConsoleKey]::Escape -or $k.Key -eq [ConsoleKey]::Q) { break }
-  }
 }
-finally {
-  Reset-ConsoleState
-  try { [Console]::SetCursorPosition(0, [Math]::Min([Console]::CursorTop, [Console]::WindowHeight-1)) } catch { }
+catch {
+  try { Reset-ConsoleState } catch { }
   Write-Host ""
+  Write-Host "FATAL ERROR:" -ForegroundColor Red
+  Write-Host $_.Exception.ToString()
+  Write-Host ""
+  Write-Host "Press any key to close..."
+  try { [Console]::ReadKey($true) | Out-Null } catch { }
 }

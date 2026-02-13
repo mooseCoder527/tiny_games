@@ -253,7 +253,7 @@ $powerDurationMs = 6000
 $powerSpawnAcc = 0.0
 
 # Bullet speed (faster bullets)
-$bulletSpeed = 4
+$bulletSpeed = 12
 
 # Boss (spawn once after Level 1, i.e. when entering Level 2)
 $bossSpawned = $false
@@ -261,7 +261,7 @@ $bossHp = 18
 
 # spawn pacing
 $spawnAcc = 0.0
-$spawnRate = 0.65
+$spawnRate = 0.3
 $enemySpeed = 0.25
 
 function Spawn-Enemy {
@@ -401,8 +401,8 @@ try {
         if ($k.Key -eq [ConsoleKey]::Spacebar) { $shoot = $true }
       }
 
-      if ($left)  { $player.x -= 8 }
-      if ($right) { $player.x += 8 }
+      if ($left)  { $player.x -= 2 }
+      if ($right) { $player.x += 2 }
       $player.x = Clamp $player.x 3 ($W-4)
 
       # Shooting (triple shot during power mode)
